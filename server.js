@@ -5,6 +5,7 @@ const morgan = require("morgan");
 const path = require("path");
 
 const { connectDB } = require("./config/db");
+const { initGCS } = require("./config/gcs");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
 
 const authRoutes = require("./routes/authRoutes");
@@ -17,6 +18,7 @@ dotenv.config();
 
 async function start() {
   await connectDB();
+  initGCS(); // Initialize Google Cloud Storage
 
   const app = express();
 
@@ -30,10 +32,10 @@ async function start() {
   app.use(express.urlencoded({ extended: true, limit: "200mb" }));
   app.use(morgan("dev"));
   
-  // Increase timeout for file uploads (Cloudinary can take time)
+  // Increase timeout for file uploads (GCS can take time for large files)
   app.use("/api/uploads", (req, res, next) => {
-    req.setTimeout(300000); // 5 minutes
-    res.setTimeout(300000);
+    req.setTimeout(1800000); // 30 minutes for very large video files (500MB+)
+    res.setTimeout(1800000);
     next();
   });
 

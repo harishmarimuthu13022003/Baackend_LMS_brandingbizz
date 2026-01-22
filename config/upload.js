@@ -1,132 +1,117 @@
 const multer = require("multer");
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const { requireCloudinary } = require("./cloudinary");
+const { uploadFile, generateFilePath } = require("./gcs");
 
-function getCloudinaryStorage(folder, resourceType) {
-  try {
-    const cloudinary = requireCloudinary();
-    return new CloudinaryStorage({
-      cloudinary,
-      params: (req, file) => {
-        // Generate unique filename
-        const uniqueId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        const sanitizedName = file.originalname.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
-        // IMPORTANT:
-        // When `folder` is provided, `public_id` should NOT include the folder prefix.
-        // Otherwise Cloudinary can end up with duplicated folder paths.
-        const publicId = `${uniqueId}-${sanitizedName}`;
+// Memory storage - files will be stored in memory as Buffer
+const memoryStorage = multer.memoryStorage();
 
-        const params = {
-          folder: `lms/${folder}`,
-          resource_type: resourceType,
-          public_id: publicId,
-        };
+/**
+ * Create a multer uploader middleware for GCS
+ * @param {Object} options - Upload options
+ * @param {string} options.folder - Folder name (thumbnails, videos, materials, ppts)
+ * @param {string[]} options.allowedMimes - Allowed MIME types
+ * @param {string[]} options.allowedExts - Allowed file extensions (fallback)
+ * @param {number} options.maxSizeMb - Maximum file size in MB
+ */
+function makeUploader({ folder, allowedMimes, allowedExts, maxSizeMb }) {
+  const maxSize = (maxSizeMb || 50) * 1024 * 1024; // Convert MB to bytes
 
-        // Note: For images, we don't set format/quality in upload params.
-        // Cloudinary preserves the original format. Use URL transformations
-        // (e.g., ?f_auto,q_auto) when serving images if needed.
-
-        // For videos, we can optionally specify format, but Cloudinary
-        // will handle conversion automatically based on the file type.
-        // Removing format specification to avoid conflicts.
-
-        return params;
-      },
-    });
-  } catch (err) {
-    throw new Error(
-      `Cloudinary configuration error: ${err.message}. Please check your CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in .env file.`
-    );
-  }
-}
-
-function makeUploader({ folder, resourceType, allowedMimes, allowedExts, maxSizeMb }) {
-  // Lazily create the multer instance so missing Cloudinary env doesn't crash at import-time
-  let uploader = null;
-
-  const maxSize = (maxSizeMb || 50) * 1024 * 1024;
+  const uploader = multer({
+    storage: memoryStorage, // Store in memory, then upload to GCS
+    limits: { fileSize: maxSize },
+    fileFilter: (req, file, cb) => {
+      console.log(`[Upload] File received: ${file.originalname}, type: ${file.mimetype}, size: ${file.size}`);
+      
+      const mimeOk = !allowedMimes || allowedMimes.includes(file.mimetype);
+      
+      if (!mimeOk) {
+        // Windows browsers sometimes send application/octet-stream for various file types
+        // Allow by extension as a fallback when configured
+        const name = (file.originalname || "").toLowerCase();
+        const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
+        const extOk = Array.isArray(allowedExts) && allowedExts.includes(ext);
+        
+        if (!extOk) {
+          return cb(
+            new Error(
+              `Invalid file type: ${file.mimetype}. Allowed mimes: ${allowedMimes?.join(", ") || "any"}${
+                allowedExts?.length ? `. Allowed extensions: .${allowedExts.join(", .")}` : ""
+              }`
+            )
+          );
+        }
+      }
+      
+      return cb(null, true);
+    },
+  });
 
   return (req, res, next) => {
-    try {
-      if (!uploader) {
-        console.log(`[Upload] Creating uploader for ${folder} (${resourceType})`);
-        const storage = getCloudinaryStorage(folder, resourceType);
-        uploader = multer({
-          storage,
-          limits: { fileSize: maxSize },
-          fileFilter: (req, file, cb) => {
-            console.log(`[Upload] File received: ${file.originalname}, type: ${file.mimetype}, size: ${file.size}`);
-            const mimeOk = !allowedMimes || allowedMimes.includes(file.mimetype);
-            if (!mimeOk) {
-              // Windows browsers sometimes send application/octet-stream for pptx/mp4/etc.
-              // Allow by extension as a fallback when configured.
-              const name = (file.originalname || "").toLowerCase();
-              const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
-              const extOk = Array.isArray(allowedExts) && allowedExts.includes(ext);
-              if (!extOk) {
-                return cb(
-                  new Error(
-                    `Invalid file type: ${file.mimetype}. Allowed mimes: ${allowedMimes?.join(
-                      ", "
-                    ) || "any"}${allowedExts?.length ? `. Allowed extensions: .${allowedExts.join(", .")}` : ""}`
-                  )
-                );
-              }
-            }
-            return cb(null, true);
-          },
-        });
+    // Use multer to parse the file into memory
+    uploader.single("file")(req, res, async (err) => {
+      if (err) {
+        console.error(`[Upload] Multer error:`, err.message);
+        
+        // Handle file size errors
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({
+            message: `File too large. Maximum size: ${maxSizeMb}MB`,
+          });
+        }
+        
+        return next(err);
       }
 
-      // Must match our routes: single("file")
-      console.log(`[Upload] Processing file upload for ${folder}`);
-      
-      // Wrap multer middleware to catch Cloudinary errors
-      return uploader.single("file")(req, res, (err) => {
-        if (err) {
-          console.error(`[Upload] Multer/Cloudinary error:`, err.message);
-          console.error(`[Upload] Error details:`, {
-            name: err.name,
-            code: err.code,
-            http_code: err.http_code,
-            message: err.message,
-          });
-          
-          // Handle Cloudinary API errors (502 Bad Gateway)
-          if (err.http_code === 502 || (err.message && err.message.includes("502"))) {
-            return res.status(502).json({
-              message: "Cloudinary service temporarily unavailable (502 Bad Gateway). This may be due to:\n" +
-                "1. Large video file causing timeout\n" +
-                "2. Cloudinary service issue\n" +
-                "3. Network connectivity problem\n\n" +
-                "Please try again in a few moments or use a smaller file (under 100MB recommended).",
-            });
-          }
-          
-          // Handle timeout errors
-          if (err.http_code === 504 || err.message?.includes("timeout") || err.message?.includes("Timeout")) {
-            return res.status(504).json({
-              message: "Upload timed out. Large video files may take longer to upload. Please try again or use a smaller file.",
-            });
-          }
-          
-          // Handle other Cloudinary errors
-          if (err.http_code) {
-            return res.status(err.http_code).json({
-              message: `Cloudinary error (${err.http_code}): ${err.message || "Upload failed"}`,
-            });
-          }
-          
-          return next(err);
+      // If no file, continue (some routes might not require files)
+      if (!req.file) {
+        return next();
+      }
+
+      // Upload to GCS
+      try {
+        // Get course/session info from body (form-data)
+        const courseTitle = req.body.courseTitle;
+        const sessionTitle = req.body.sessionTitle;
+        const uniqueId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+        const sanitizedName = req.file.originalname.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
+        const filename = `${uniqueId}-${sanitizedName}`;
+
+        // Generate file path
+        let filePath;
+        if (courseTitle && sessionTitle) {
+          filePath = generateFilePath(courseTitle, sessionTitle, folder, filename);
+        } else {
+          filePath = `lms/${folder}/${filename}`;
         }
+
+        console.log(`[Upload] Uploading to GCS: ${filePath}`);
+
+        // Upload to GCS
+        const result = await uploadFile(
+          req.file.buffer,
+          filePath,
+          req.file.mimetype,
+          {
+            originalName: req.file.originalname,
+            uploadedBy: req.user?.email || "unknown",
+          }
+        );
+
+        // Attach GCS result to req.file for compatibility
+        req.file.path = result.url;
+        req.file.filename = result.path;
+        req.file.publicId = result.publicId;
+        req.file.url = result.url;
+
+        console.log(`[Upload] GCS upload successful: ${result.url}`);
         next();
-      });
-    } catch (err) {
-      console.error(`[Upload] Error creating uploader:`, err);
-      return next(err);
-    }
+      } catch (gcsError) {
+        console.error(`[Upload] GCS upload error:`, gcsError.message);
+        return res.status(500).json({
+          message: `Failed to upload file to Google Cloud Storage: ${gcsError.message}`,
+        });
+      }
+    });
   };
 }
 
 module.exports = { makeUploader };
-

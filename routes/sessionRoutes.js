@@ -5,6 +5,7 @@ const {
   createSession,
   listBySection,
   getSessionById,
+  addContentToSession,
 } = require("../controllers/sessionController");
 
 const router = express.Router();
@@ -26,6 +27,9 @@ router.post(
   ],
   createSession
 );
+
+// Add content items to existing session (for bulk uploads)
+router.put("/:id/add-content", authRequired, adminOnly, addContentToSession);
 
 module.exports = router;
 
