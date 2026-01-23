@@ -18,10 +18,9 @@ public/ppts/
 public/videos/
 
 # Google Cloud Storage key files (NEVER commit these!)
-*.json
-!package.json
-!package-lock.json
 gcs-key.json
+# CORS config can be committed (it's just configuration, no secrets)
+# gcs-cors.json
 
 # OS
 .DS_Store

@@ -22,15 +22,16 @@ const pdfUpload = makeUploader({
   maxSizeMb: 25,
 });
 
-// PPT/PPTX (classroom slides)
+// PPT/PPTX and PDFs (classroom slides and documents)
 const pptUpload = makeUploader({
   folder: "ppts",
   allowedMimes: [
     "application/vnd.ms-powerpoint",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/pdf",
     "application/octet-stream",
   ],
-  allowedExts: ["ppt", "pptx"],
+  allowedExts: ["ppt", "pptx", "pdf"],
   maxSizeMb: 50,
 });
 

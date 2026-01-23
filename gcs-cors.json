@@ -1,0 +1,20 @@
+[
+  {
+    "origin": [
+      "https://brandingbeez.io",
+      "https://www.brandingbeez.io",
+      "https://crm.brandingbeez.io",
+      "https://lms.brandingbeez.io",
+      "http://localhost:3000",
+      "http://localhost:5173"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": [
+      "Content-Type",
+      "Range",
+      "Accept-Ranges",
+      "Content-Length"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]
